@@ -56,6 +56,11 @@ from strong_sort.deep.reid_model_factory import load_pretrained_weights
 
 log = logging.getLogger(__name__)
 
+#: Cap on the sqrt(frame gap) multiplier in the spatial merge gate. Uncapped,
+#: spatial_thresh * sqrt(gap) exceeds the frame width past ~164 frames and the
+#: gate silently stops constraining anything. 4.0 -> 600 px at spatial_thresh=150.
+SPATIAL_SCALE_CAP = 4.0
+
 #: Fraction of tracked detections the per-frame collision guard may discard before
 #: the run is flagged. Above this the merge is not trustworthy -- see process().
 DEDUP_WARN_FRAC = 0.01
@@ -297,6 +302,7 @@ class GTALink(VideoLevelModule):
         n = len(tids)
 
         forbidden = np.zeros((n, n), dtype=bool)
+        n_capped = n_gated = n_disjoint = 0
         for i in range(n):
             _, si, ei, _, last_i = embs[tids[i]]
             for j in range(n):
@@ -307,11 +313,37 @@ class GTALink(VideoLevelModule):
                 if not (ei < sj or ej < si):          # overlap in time -> never merge
                     forbidden[i, j] = True
                 elif ei < sj:                          # i strictly before j -> spatial gate
+                    n_disjoint += 1
                     a = last_i[:2] + last_i[2:] / 2.0  # last centre of i
                     b = first_j[:2] + first_j[2:] / 2.0  # first centre of j
-                    gap = max(1.0, abs(sj - ei) ** 0.5)
+                    # CAP the sqrt scaling. Uncapped, spatial_thresh * sqrt(gap)
+                    # crosses the frame width at a gap of ~164 frames (~6.5 s at
+                    # 25 fps) and the gate stops rejecting anything -- a silent
+                    # no-op, which is the failure mode worth eliminating. The cap
+                    # substitutes a stated constant (spatial_thresh * 4 = 600 px
+                    # at the tuned value) for that no-op.
+                    #
+                    # It is a MITIGATION, not a fix: no image-space threshold is
+                    # principled when the camera pans and zooms. The principled
+                    # gate is in pitch coordinates, which needs gta_link to run
+                    # after calibration. See KNOWN_LIMITATIONS.md section 1.
+                    raw = abs(sj - ei) ** 0.5
+                    scale = min(raw, SPATIAL_SCALE_CAP)
+                    if raw > SPATIAL_SCALE_CAP:
+                        n_capped += 1
+                    gap = max(1.0, scale)
                     if np.linalg.norm(a - b) > self.spatial_thresh * gap:
                         forbidden[i, j] = True
+                        n_gated += 1
+        if n_disjoint:
+            log.info(
+                f"[GTA-Link] spatial gate: rejected {n_gated}/{n_disjoint} "
+                f"temporally-disjoint pairs; the sqrt cap was the binding "
+                f"constraint on {n_capped} of them "
+                f"({100.0 * n_capped / n_disjoint:.0f}%). A high cap-binding rate "
+                f"with few rejections means the gate is doing little work and "
+                f"merging is effectively appearance-only at long range."
+            )
 
         # SYMMETRISE. The loop above writes the spatial gate to forbidden[i, j]
         # only: for a temporally-disjoint pair the (j, i) iteration takes neither
