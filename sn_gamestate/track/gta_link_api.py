@@ -56,6 +56,10 @@ from strong_sort.deep.reid_model_factory import load_pretrained_weights
 
 log = logging.getLogger(__name__)
 
+#: Fraction of tracked detections the per-frame collision guard may discard before
+#: the run is flagged. Above this the merge is not trustworthy -- see process().
+DEDUP_WARN_FRAC = 0.01
+
 
 class _TRTReID:
     """Minimal TensorRT runner for the sports-OSNet ReID engine.
@@ -179,12 +183,20 @@ class GTALink(VideoLevelModule):
                    if "file_path" in metadatas.columns else {})
         pos = {idx: i for i, idx in enumerate(dets.index)}
 
+        # Every path below that fails leaves a ZERO feature, which is not inert:
+        # a zero embedding has cosine distance 1.0 to everything, so the tracklet
+        # is silently excluded from all merging while the stage still reports
+        # success. Counted and reported rather than passed over in silence.
+        n_no_path = n_unreadable = n_degenerate = 0
+
         for image_id, group in dets.groupby("image_id"):
             path = id2path.get(image_id)
             if path is None:
+                n_no_path += len(group)
                 continue
             img = cv2_load_image(path)
             if img is None:
+                n_unreadable += len(group)
                 continue
             h_img, w_img = img.shape[:2]
             batch, rows = [], []
@@ -210,6 +222,7 @@ class GTALink(VideoLevelModule):
                 x1, y1 = max(0, int(l)), max(0, int(t))
                 x2, y2 = min(w_img, int(l + w)), min(h_img, int(t + h))
                 if x2 <= x1 or y2 <= y1:
+                    n_degenerate += 1
                     continue  # leave zeros for degenerate boxes
                 # cv2_load_image already returns RGB, and both the torchvision
                 # transform and OSNet expect RGB — so crop the RGB image directly
@@ -220,6 +233,18 @@ class GTALink(VideoLevelModule):
                 if len(batch) >= self.batch_size:
                     _flush()
             _flush()
+
+        n_zero = int((np.linalg.norm(feats, axis=1) < 1e-6).sum())
+        if n_zero:
+            log.warning(
+                f"[GTA-Link] {n_zero}/{len(dets)} detections have a ZERO "
+                f"appearance feature (no file_path: {n_no_path}, unreadable "
+                f"image: {n_unreadable}, degenerate bbox: {n_degenerate}). A zero "
+                f"embedding sits at cosine distance 1.0 from everything, so those "
+                f"tracklets can never be merged and GTA-Link is silently a no-op "
+                f"for them. If the first detection of a tracklet is affected, its "
+                f"EMA is seeded with zeros and stays biased."
+            )
         return feats
 
     # ------------------------------------------------------------------ clustering
@@ -288,6 +313,24 @@ class GTALink(VideoLevelModule):
                     if np.linalg.norm(a - b) > self.spatial_thresh * gap:
                         forbidden[i, j] = True
 
+        # SYMMETRISE. The loop above writes the spatial gate to forbidden[i, j]
+        # only: for a temporally-disjoint pair the (j, i) iteration takes neither
+        # branch, so forbidden[j, i] stays False. AgglomerativeClustering with
+        # metric="precomputed" performs NO symmetry validation and silently reads
+        # the upper triangle (verified on sklearn 1.6.1), so a gate landing in the
+        # lower triangle is discarded and the pair merges anyway.
+        #
+        # It is dormant on raw tracker output: BoT-SORT assigns track_id at
+        # activation, so start(i) <= start(j) whenever tid_i < tid_j, and for a
+        # disjoint pair the branch `ej < si` would require ej < sj -- impossible
+        # for a real interval. The gate therefore always lands upper.
+        #
+        # It is NOT dormant on a second pass: the relabelling below reassigns ids
+        # by cluster order and appends short/unclustered tracklets last, so after
+        # one GTA-Link pass track_id is no longer monotone in first appearance.
+        # Re-running this stage from a saved state (a supported workflow) is
+        # exactly that case. Symmetrising costs nothing and closes it.
+        forbidden |= forbidden.T
         gated = dist.copy()
         gated[forbidden] = 1.0
         np.fill_diagonal(gated, 0.0)
@@ -320,6 +363,24 @@ class GTALink(VideoLevelModule):
             f"[GTA-Link] tracklets {n_before} -> {n_after} "
             f"(merged {n_before - n_after}); per-frame de-dup nulled {n_nulled} detection(s)"
         )
+        # The de-dup is DESTRUCTIVE: it resolves a bad transitive merge by
+        # discarding detections (track_id -> NaN), not by splitting the cluster.
+        # At INFO that is indistinguishable from a healthy run, so a merge that
+        # destroys a meaningful share of the sequence must be loud.
+        n_tracked = int(detections["track_id"].notna().sum())
+        if n_nulled and n_tracked:
+            frac = n_nulled / n_tracked
+            if frac >= DEDUP_WARN_FRAC:
+                log.warning(
+                    f"[GTA-Link] per-frame de-dup discarded {n_nulled}/{n_tracked} "
+                    f"tracked detections ({frac:.1%}, threshold "
+                    f"{DEDUP_WARN_FRAC:.0%}). Average linkage placed "
+                    f"time-overlapping tracklets in one cluster transitively and "
+                    f"the collision guard resolved it by dropping rows. Treat the "
+                    f"merge as unreliable: check appearance_thresh "
+                    f"({self.appearance_thresh}) and the tracklet-length "
+                    f"distribution before trusting these ids."
+                )
         return out
 
     # ------------------------------------------------------------------ de-dup

@@ -153,6 +153,18 @@ class NotebookBoTSORT(_fork.BoTSORT):
         # -- appearance features for the high-confidence set ------------------
         if len(ltrb_first) > 0:
             features_first = self._get_features_ltrb(ltrb_first, img)
+            # zip() below stops at the SHORTEST input, so a short feature array
+            # would silently discard high-confidence detections -- no exception,
+            # no log, just fewer tracks. _get_features_ltrb pads degenerate boxes
+            # precisely to keep the lengths equal; this makes that contract
+            # enforced rather than assumed. Raise, not assert: `python -O` strips
+            # asserts and this must not become a no-op in an optimised run.
+            if len(features_first) != len(ltrb_first):
+                raise RuntimeError(
+                    f"[BoT-SORT] ReID returned {len(features_first)} features for "
+                    f"{len(ltrb_first)} detections. zip() would silently drop the "
+                    f"surplus detections; refusing to track on a truncated set."
+                )
             detections = [
                 STrack(tlwh, s, c, np.asarray(f, dtype=np.float32), tracklab_id=tid)
                 for (tlwh, s, c, f, tid) in zip(
@@ -357,9 +369,17 @@ class NotebookBotSORT(_TracklabBotSORT):
             track_bbox_conf = list(results[:, 6])
             track_ids = list(results[:, 4])
             idxs = list(results[:, 7].astype(int))
-            assert set(idxs).issubset(
-                detections.index
-            ), "Mismatch of indexes during the tracking. The results should match the detections."
+            # Raise, not assert: `python -O` strips asserts, and this is the only
+            # index-integrity check in the stage. Without it a tracker/detection
+            # index mismatch writes track_id against the WRONG rows -- plausible
+            # output, no exception, every downstream stage silently corrupted.
+            stray = set(idxs) - set(detections.index)
+            if stray:
+                raise RuntimeError(
+                    f"[BoT-SORT] tracker returned {len(stray)} index/indices absent "
+                    f"from the detections frame (e.g. {sorted(stray)[:5]}). Track "
+                    f"ids would be attached to the wrong detections."
+                )
             results = pd.DataFrame(
                 {
                     "track_bbox_ltwh": track_bbox_ltwh,
