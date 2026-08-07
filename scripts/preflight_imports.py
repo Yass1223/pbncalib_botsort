@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import re
 import sys
 import traceback
@@ -39,6 +40,26 @@ def discover_targets() -> list[str]:
     for yaml_file in CONFIG_DIR.rglob("*.yaml"):
         targets.update(TARGET_RE.findall(yaml_file.read_text(encoding="utf-8")))
     return sorted(targets)
+
+
+def is_matplotlib_backend_error(reason: str) -> bool:
+    """True for the ValueError matplotlib raises over an unusable MPLBACKEND.
+
+    matplotlib assigns rcParams['backend'] from MPLBACKEND at import time, so
+    this fires during `import matplotlib` itself, before any pipeline code
+    runs. Match on the invariant fragment only -- the tail of the message is a
+    version-dependent list of supported backends.
+
+    The same ValueError is reachable without MPLBACKEND at all (a bad backend
+    in a matplotlibrc, or an explicit matplotlib.use() inside a dependency),
+    and "export MPLBACKEND=Agg" would be useless advice there. So require the
+    variable to be set AND to be the value the message is complaining about.
+    """
+    backend = os.environ.get("MPLBACKEND")
+    return (bool(backend)
+            and reason.startswith("ValueError:")
+            and "is not a valid value for backend" in reason
+            and "'%s'" % backend in reason)
 
 
 def try_import(dotted: str) -> tuple[bool, str, str]:
@@ -80,12 +101,46 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print(f"{RED}{len(failures)} of {len(targets)} stages failed to import.{RESET}")
-    print(f"{YELLOW}These are almost always unpinned transitive dependencies "
-          f"that drifted forward.{RESET}")
-    print("Fix by adding an upper bound to [project.dependencies] in "
-          "pyproject.toml, then:")
-    print("    rm -rf .venv && uv venv --clear --python 3.9 .venv "
-          "&& uv pip install --python .venv -e .\n")
+
+    # A uniform failure across EVERY stage is not dependency drift. Drift breaks
+    # the stages that share the drifted package and leaves the rest importable;
+    # losing all of them at once, with byte-identical errors, means the failure
+    # is upstream of the pipeline entirely.
+    reasons = {reason for _, reason, _ in failures}
+    if (len(failures) == len(targets) and len(reasons) == 1
+            and is_matplotlib_backend_error(next(iter(reasons)))):
+        # The cause is a notebook kernel exporting its own inline backend into
+        # a venv that does not have it. ipykernel does this unconditionally --
+        # kernelapp.py defaults MPLBACKEND to
+        # module://matplotlib_inline.backend_inline -- so it applies to any
+        # Jupyter host, Kaggle included, and every subprocess inherits it.
+        #
+        # That name looks like it should be exempt: matplotlib accepts any
+        # `module://` backend without importing it. But
+        # BackendRegistry.is_valid_backend (matplotlib/backends/registry.py,
+        # checked against 3.10.8) first rewrites the two known long names for
+        # backward compatibility --
+        #     module://matplotlib_inline.backend_inline -> inline
+        #     module://ipympl.backend_nbagg             -> widget
+        # -- and the rewritten name no longer starts with `module://`, so it
+        # loses that exemption and has to resolve as an ordinary named backend
+        # through entry points. matplotlib_inline supplies those, so the venv
+        # not having it is exactly what makes the name unresolvable. Hence a
+        # ValueError at `import matplotlib`, before any of our code runs.
+        print(f"{YELLOW}Every stage failed identically, at `import matplotlib`."
+              f"{RESET}")
+        print("This is the ENVIRONMENT, not dependency drift -- pyproject.toml "
+              "is not the problem.")
+        print(f"    {DIM}{next(iter(reasons))}{RESET}")
+        print("Fix by forcing a backend that needs no GUI or kernel:")
+        print("    export MPLBACKEND=Agg\n")
+    else:
+        print(f"{YELLOW}These are almost always unpinned transitive "
+              f"dependencies that drifted forward.{RESET}")
+        print("Fix by adding an upper bound to [project.dependencies] in "
+              "pyproject.toml, then:")
+        print("    rm -rf .venv && uv venv --clear --python 3.9 .venv "
+              "&& uv pip install --python .venv -e .\n")
 
     if args.verbose:
         for dotted, _, tb in failures:
