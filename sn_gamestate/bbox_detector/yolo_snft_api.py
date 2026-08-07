@@ -79,6 +79,49 @@ class YOLOUltralyticsSNFT(YOLOUltralytics):
         if not self._is_engine:
             self.model.to(device)
 
+        self._logged_classes = False
+        self._log_checkpoint_args()
+
+    def _log_checkpoint_args(self):
+        """Report the size the checkpoint was TRAINED at, against cfg.imgsz.
+
+        Inference at a different imgsz than training degrades small-object recall
+        without raising -- distant players are exactly the population at risk on
+        broadcast footage, and the failure is a quieter detection set, not an
+        error. ultralytics stores the training arguments on the loaded model, so
+        the comparison is free; a TensorRT engine may not carry them, hence the
+        broad guard.
+        """
+        try:
+            args = getattr(getattr(self.model, "model", None), "args", None) or {}
+            trained = args.get("imgsz") if hasattr(args, "get") else getattr(args, "imgsz", None)
+        except Exception as exc:                      # engine / unexpected layout
+            log.info(f"[YOLO-SNFT] could not read training args ({exc}); "
+                     f"running at imgsz={self.imgsz}")
+            return
+        if trained is None:
+            log.info(f"[YOLO-SNFT] checkpoint carries no training imgsz "
+                     f"(TensorRT engine?); running at imgsz={self.imgsz}")
+            return
+        if int(trained) != int(self.imgsz):
+            log.warning(
+                f"[YOLO-SNFT] checkpoint was TRAINED at imgsz={trained} but "
+                f"inference runs at imgsz={self.imgsz}. This does not raise; it "
+                f"silently changes which small/distant players are detected. "
+                f"Either set cfg.imgsz={trained} or accept the mismatch "
+                f"deliberately."
+            )
+        else:
+            log.info(f"[YOLO-SNFT] imgsz {self.imgsz} matches the checkpoint's "
+                     f"training size")
+
+    def reset(self):
+        """Called once per video by the engine (offline.py:11-13, hasattr-guarded)."""
+        self._logged_classes = False
+        parent_reset = getattr(super(), "reset", None)
+        if callable(parent_reset):
+            parent_reset()
+
     @torch.no_grad()
     def process(self, batch, detections: pd.DataFrame, metadatas: pd.DataFrame):
         images, shapes = batch
@@ -92,13 +135,43 @@ class YOLOUltralyticsSNFT(YOLOUltralytics):
             iou=self.iou,
             max_det=self.max_det,
         )
+        if not self._logged_classes:
+            # Which classes does this checkpoint actually emit? The cls == 0
+            # filter below silently discards everything else, with no count. If
+            # the fine-tune turns out to be multi-class (player / goalkeeper /
+            # referee / ball) that drops two of the three evaluated roles and
+            # still produces a completely plausible run. Logged once per video.
+            try:
+                seen = sorted({int(b.cls) for r in results_by_image
+                               for b in r.boxes.cpu().numpy()})
+                names = getattr(self.model, "names", None)
+                log.info(f"[YOLO-SNFT] class ids present in raw output: {seen}; "
+                         f"model.names={names}")
+                if seen and seen != [0]:
+                    log.warning(
+                        f"[YOLO-SNFT] checkpoint emits classes {seen} but only "
+                        f"cls==0 is kept. Every other class is discarded here "
+                        f"without a count. If those are goalkeeper/referee, the "
+                        f"pipeline is losing evaluated roles silently -- confirm "
+                        f"the intended mapping before trusting any metric."
+                    )
+            except Exception as exc:              # never let logging kill a run
+                log.debug(f"[YOLO-SNFT] class-id probe failed: {exc}")
+            self._logged_classes = True
+
         detections = []
         for results, shape, (_, metadata) in zip(
             results_by_image, shapes, metadatas.iterrows()
         ):
             for bbox in results.boxes.cpu().numpy():
-                # single-class person fine-tune; ">=" keeps boxes at exactly the
-                # floor, matching the notebook's `conf >= TRACK_DET_CONF` det files.
+                # Single-class person fine-tune.
+                #
+                # NOTE the `>=` here is cosmetic, not load-bearing: ultralytics
+                # already applied `conf` inside non_max_suppression with a STRICT
+                # `>`, so boxes at exactly the floor never reach this loop. The
+                # effective floor is `> min_confidence`, not `>= min_confidence`.
+                # Kept for symmetry with the tracker's own pre-filter, which is
+                # genuinely `>=` because nothing upstream of it has filtered.
                 if bbox.cls == 0 and bbox.conf >= self.cfg.min_confidence:
                     detections.append(
                         pd.Series(

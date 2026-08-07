@@ -86,6 +86,7 @@ class NotebookBoTSORT(_fork.BoTSORT):
         # carry it ourselves. lambda_ is accepted by the parent but unused here.
         super().__init__(*args, **kwargs)
         self.track_low_thresh = float(track_low_thresh)
+        self._logged_feature_norms = False
 
     # ---------------------------------------------------------------- features
     def _get_features_ltrb(self, ltrb_boxes, img):
@@ -110,7 +111,48 @@ class NotebookBoTSORT(_fork.BoTSORT):
         feats = self.model(crops)  # ReIDDetectMultiBackend handles preprocessing
         if isinstance(feats, torch.Tensor):
             feats = feats.cpu().float().numpy()
+        self._check_feature_norms(feats)
         return feats
+
+    def _check_feature_norms(self, feats):
+        """Warn on features that cannot be safely normalised.
+
+        Asserting unit norm HERE would be wrong: the backend
+        (``deep_oc_sort/reid_multibackend.py``) applies only
+        Resize/ToTensor/Normalize and returns raw OSNet output, and
+        ``matching.embedding_distance`` uses ``cdist(..., 'cosine')``, which
+        normalises internally. Raw features are not expected to be unit-length
+        and that is fine.
+
+        What is NOT fine is a degenerate feature. ``STrack.update_features``
+        (``bot_sort/bot_sort.py:43``) does ``feat /= np.linalg.norm(feat)`` with
+        **no epsilon**. A near-zero feature therefore becomes inf/nan, flows into
+        ``smooth_feat``, and turns the appearance cost matrix into nan --
+        ``np.minimum(ious, emb)`` then propagates it and the assignment is
+        undefined. No exception is raised anywhere along that path.
+
+        The degenerate case is reachable: ``_get_features_ltrb`` substitutes a
+        2x2 black crop for any box that clamps to zero area, precisely so batch
+        order stays aligned.
+        """
+        if self._logged_feature_norms or not len(feats):
+            return
+        norms = np.linalg.norm(np.asarray(feats, dtype=np.float64), axis=1)
+        n_bad = int((norms < 1e-6).sum())
+        n_nonfinite = int((~np.isfinite(norms)).sum())
+        log.info(f"[BoT-SORT] ReID feature norms: min={norms.min():.4g} "
+                 f"median={float(np.median(norms)):.4g} max={norms.max():.4g} "
+                 f"(raw OSNet output; cdist('cosine') normalises downstream)")
+        if n_bad or n_nonfinite:
+            log.warning(
+                f"[BoT-SORT] {n_bad} near-zero and {n_nonfinite} non-finite ReID "
+                f"feature(s). STrack.update_features divides by the norm without "
+                f"an epsilon, so these become inf/nan, contaminate smooth_feat, "
+                f"and make the appearance cost matrix nan -- silently, with no "
+                f"exception. Usual cause: a degenerate bbox getting the 2x2 black "
+                f"placeholder crop."
+            )
+        self._logged_feature_norms = True
 
     # ------------------------------------------------------------------ update
     def update(self, output_results, img):
