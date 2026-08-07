@@ -1,0 +1,94 @@
+# Option A field registration: PnLCalib per-frame calibration + temporal smoothing.
+#
+# Replaces the BroadTrack calibration stage. Like BroadTrack it needs NO separate
+# `pitch` stage -- PnLCalib runs its own keypoint (57+1) and line (23+1) HRNet-w48
+# detectors internally and emits camera parameters directly. (This repo has no
+# `pitch` stage at all, so there is nothing to remove.)
+#
+# Measured by optiona_sfr on the SoccerNet-GSR test split (4 sequences x 750
+# frames), smoothing + per-frame variant selection vs raw PnLCalib:
+#   completeness 0.946 -> 1.000   mre 398.8 -> 325.1   medre 160.5 -> 160.3
+#   jitter_pan -33%   jitter_tilt -96%   jitter_f -85%   focal travel -81%
+# NOTE those aggregates are dominated by one sequence (SNGS-118) that is bad in
+# both; on the three healthy sequences median reprojection is 6.9-10.2 px.
+#
+# PnLCalib is NOT vendored (GPL-2.0). Clone it and fetch the v1.0.0 weights once:
+#   bash scripts/setup_pnlcalib.sh
+# Verify the camera conversion before trusting any metric (runs locally, needs
+# only numpy + OpenCV + scipy -- no torch, no checkpoints):
+#   python scripts/verify_optiona_conversion.py
+# Verify PnLCalib itself runs on this torch (Kaggle, needs the checkpoints):
+#   python scripts/verify_pnlcalib_env.py --repo ... --weights-kp ... --frame ...
+_target_: sn_gamestate.calibration.optiona_api.OptionACalibration
+cfg:
+  # --- provisioning (paths produced by scripts/setup_pnlcalib.sh) ---
+  pnlcalib_repo: ${model_dir}/pnlcalib/PnLCalib
+  weights_kp: ${model_dir}/pnlcalib/weights/SV_kp
+  weights_line: ${model_dir}/pnlcalib/weights/SV_lines
+
+  # --- method ---
+  # smooth : PnLCalib per frame, then so(3) + log-focal Savitzky-Golay smoothing
+  #          with MAD outlier rejection and geodesic gap filling. The measured
+  #          winner, and offline smoothing is a natural fit for a video-level
+  #          module that already has the whole sequence in hand.
+  # raw    : PnLCalib per frame, unsmoothed. The honest baseline for an ablation.
+  # The v2/v3 variants live in optiona_sfr's experiment driver
+  # (experiments.run_sequence), which writes result CSVs and is not an API;
+  # reaching them from here is a separate change, and the module says so rather
+  # than pretending to support them.
+  method: smooth
+  smooth_window: 9        # Savitzky-Golay window (odd; clamped to sequence length)
+  smooth_polyorder: 2
+  interpolate: true       # fill frames PnLCalib could not solve, geodesically
+  reject_k: 4.0           # MAD multiplier for rejecting per-frame outliers
+
+  # Choose PnLCalib's own `refine_lines` setting PER FRAME by self-fit. Neither
+  # setting wins everywhere -- measured 13.5 px vs 616.4 px on one sequence and
+  # the reverse on another -- so any fixed choice guarantees a broken sequence.
+  # Both variants are cached, so this is nearly free.
+  select_variant: true
+
+  # --- detector thresholds (PnLCalib inference.py defaults, verified) ---
+  kp_threshold: 0.3434
+  line_threshold: 0.7867
+
+  # --- caches: calibrate once, reuse for every later pipeline run ---
+  # Two levels. det_cache_dir holds per-frame HRNet detections (the only GPU
+  # work); calib_dir holds the converted per-sequence camera JSON. With calib_dir
+  # warm a re-run needs no torch at all, which is what makes sharded multi-GPU
+  # Kaggle runs cheap -- same idea as state.save_file.
+  det_cache_dir: ${project_dir}/optiona_det_cache
+  calib_dir: ${project_dir}/optiona_calib
+  use_cached_json: true
+  refresh_detections: false   # true forces re-running the detector
+
+  # --- robustness ---
+  # Carry the last good camera forward when a frame has none (same role as NBJW's
+  # use_prev_homography and BroadTrack's carry-forward).
+  use_prev_parameters: true
+
+  # Gate on the Jaccard/detection-precision confidence s = |D n T| / |D|.
+  #
+  # READ THIS BEFORE CHANGING IT. Completeness on this stage is ~1.0 BY
+  # CONSTRUCTION: smoothing interpolates gaps, carry-forward fills the rest, and
+  # the tracker layer never returns None after lock-on. A camera that locks on at
+  # frame 1, drifts, and is carried for the remaining 749 frames yields zero
+  # errors, 100% completeness, and wrong pitch coordinates everywhere. `s` is the
+  # only signal that distinguishes that from a working sequence.
+  #
+  # 0.0 keeps every frame and matches the BroadTrack config, so the A/B compares
+  # like with like -- that is why it is the default. 0.5 is the principled
+  # alternative (BroadTrack's own reinitialisation threshold); raising it trades
+  # completeness for trustworthiness. The module logs min/median/max s and the
+  # first lock-on frame per sequence either way, so you can choose on evidence.
+  min_score: 0.0
+  jaccard_dilate_px: 7
+
+  # --- optical-flow player masking: DEFERRED, deliberately off ---
+  # optiona_sfr's tracker ignores player_boxes whenever a cached flow pair is
+  # supplied (tracker.py:220-226), and detection.compute_flow_pairs takes no mask
+  # argument (detection.py:51). Masking therefore needs the LIVE flow path, i.e.
+  # holding decoded frames in memory -- a separable change and a clean later
+  # ablation. It must not block integration, and the `smooth` method does not use
+  # optical flow at all, so this flag is currently inert by design.
+  mask_players: false

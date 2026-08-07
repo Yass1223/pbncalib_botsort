@@ -1,0 +1,63 @@
+# --- model weights -----------------------------------------------------------
+# Never committed. PnLCalib's SV_kp / SV_lines are ~253 MiB each and are fetched
+# by scripts/setup_pnlcalib.sh; the reid / jersey / detector checkpoints come
+# from their own setup scripts.
+pretrained_models/
+weights/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.trt
+SV_kp
+SV_lines
+MV_kp
+MV_lines
+
+# --- the PnLCalib clone ------------------------------------------------------
+# GPL-2.0. Cloned at runtime, never vendored -- committing it would relicense
+# this repository.
+PnLCalib/
+pnlcalib/
+
+# --- SoccerNet data ----------------------------------------------------------
+data/
+*.zip
+Labels-GameState.json
+
+# --- caches produced by the pipeline ----------------------------------------
+optiona_calib/
+optiona_det_cache/
+broadtrack_calib/
+broadtrack_staging/
+states/
+outputs/
+multirun_outputs/
+reference_metrics/
+det_cache/
+results/
+labels/
+
+# --- environments ------------------------------------------------------------
+.venv/
+venv/
+env/
+uv.lock
+
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- editors / OS ------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

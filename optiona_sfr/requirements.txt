@@ -1,0 +1,53 @@
+# optiona_sfr runtime dependencies.
+#
+# Versions mirror the gn_pncalib pipeline's resolved lock (uv.lock) exactly,
+# because optiona_sfr is vendored INTO that pipeline: after integration,
+# pyproject.toml is the single source of truth and this file must not be able
+# to drag the environment forward. Every pin below was read out of uv.lock,
+# except shapely and matplotlib (see below).
+#
+# The environment is Python >=3.9,<3.10 with torch 1.13.1 -- the pipeline's
+# detector, reid and tracking stages require that torch, and it is not
+# negotiable from this side. PnLCalib's own requirements.txt asks for
+# torch 2.3.1 / numpy 2.0.2 / torchvision 0.18.1; those are NOT used. The
+# models it loads (model/cls_hrnet.py, model/cls_hrnet_l.py) use only
+# nn.Conv2d/BatchNorm2d/ReLU/Sequential/ModuleList/Upsample/Sigmoid/Softmax,
+# nn.init, F.interpolate and torch.cat -- all long predating 1.13.
+#
+# Standalone Kaggle use: torch/torchvision are preinstalled there at 2.x, so the
+# torch lines below are RANGES, not exact pins -- they must admit both 1.13.1
+# (integrated pipeline) and 2.x (Kaggle session). Install this file with
+# --no-deps on Kaggle regardless: a naive install will try to move the session's
+# torch and can leave CUDA mismatched against the driver.
+
+# --- core numerics: pinned to the pipeline lock ---
+numpy==1.26.4
+scipy==1.13.1
+pandas==2.3.3
+
+# --- imaging ---
+opencv-python==4.11.0.86
+Pillow==11.3.0
+
+# --- torch stack: a RANGE, so this file works in both environments ---
+# The integrated pipeline resolves 1.13.1 / 0.14.1 from pyproject.toml, which is
+# authoritative; Kaggle already has 2.x. Pinning ==1.13.1 here would make the
+# standalone path fight its own session for no benefit.
+torch>=1.13,<3
+torchvision>=0.14,<1
+
+# --- PnLCalib runtime imports (were missing from this file entirely) ---
+# utils/utils_optimize.py imports shapely.geometry AND matplotlib.pyplot at
+# module level, and utils/utils_calib.py imports utils_optimize -- so both are
+# hard import-time requirements of FramebyFrameCalib, not optional extras.
+# shapely was absent from the pipeline lock and is the one genuinely new
+# dependency; matplotlib was already present transitively at exactly the
+# version PnLCalib pins.
+# shapely 2.1 requires Python >=3.10 (verified on PyPI), hence the 2.0.x bound.
+shapely>=2.0,<2.1
+matplotlib==3.9.4
+
+# --- misc ---
+pyyaml==6.0.3
+tqdm==4.70.0
+SoccerNet==0.1.55
