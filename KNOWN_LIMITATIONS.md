@@ -1,0 +1,128 @@
+# Known limitations
+
+Defects and design compromises that are understood, deliberate, and **not** fixed
+in this repository. Recorded here so they are not rediscovered as surprises, and
+so that anyone reading a result knows what it does and does not establish.
+
+Each entry states what is wrong, why it is not fixed here, and what would fix it.
+
+---
+
+## 1. The GTA-Link spatial gate cannot be principled in image coordinates
+
+`sn_gamestate/track/gta_link_api.py` gates a candidate tracklet merge on the
+pixel distance between the last box centre of one tracklet and the first box
+centre of the next, scaled by `spatial_thresh * sqrt(frame gap)`.
+
+**The problem is the coordinate system, not the scaling.** With a panning and
+zooming broadcast camera there is no physical bound on pixel displacement: the
+same player standing still can move most of the frame width between two
+temporally distant tracklets. No image-space threshold is therefore principled.
+At the tuned `spatial_thresh = 150` the threshold crosses the 1920 px frame width
+at a gap of ~164 frames (~6.5 s), beyond which the gate cannot reject anything and
+appearance is the only remaining constraint — a silent no-op.
+
+**What would fix it:** gate in *pitch* coordinates, where a bound is physical
+(a player covers at most ~10 m/s of real ground regardless of camera motion).
+
+**Why not here:** `bbox_pitch` does not exist yet at that point in the pipeline.
+The stage order is `bbox_detector -> reid -> track -> gta_link -> calibration`,
+so GTA-Link runs *before* the calibration stage that produces pitch coordinates.
+Using them requires reordering the pipeline, which changes what every downstream
+stage sees and cannot be evaluated as a single attributable change.
+
+**Current state:** the branch `fix/f10-spatial-cap` caps the multiplier at
+`min(sqrt(gap), 4.0)` (600 px) and counts how often the cap is the binding
+constraint. That replaces a silent no-op with a stated constant. It is a
+mitigation, not a fix — if the measurement shows no effect, the honest reading is
+that the gate was never doing work and merging is appearance-only beyond a few
+seconds.
+
+---
+
+## 2. `track: {batch_size: 64}` is inert
+
+`sn_gamestate/configs/soccernet.yaml` carries:
+
+```yaml
+modules: # module-specific batch sizes (override the per-module yaml values)
+  bbox_detector: {batch_size: 4}
+  reid: {batch_size: 64}
+  track: {batch_size: 64}
+```
+
+For the `track` stage the value is **silently discarded**. tracklab's
+`wrappers/track/bot_sort_api.py:25-26` is:
+
+```python
+def __init__(self, cfg, device, **kwargs):
+    super().__init__(batch_size=1)
+```
+
+`batch_size` is hardcoded to 1 and `cfg` is never consulted for it.
+`NotebookBotSORT` overrides only `reset()` and `process()`, so it inherits this.
+`ImageLevelModule.dataloader` then builds its `DataLoader` with `batch_size=1`.
+
+**This is benign** — indeed it is what makes the stage correct, since
+`process()` indexes `batch["input"][0]` and `metadatas["file_path"].values[0]`
+and would silently drop 63 of every 64 frames if a real batch ever arrived.
+
+**The comment is wrong.** "override the per-module yaml values" is false for this
+module. The line is retained rather than deleted so that this note has something
+to attach to, and so nobody reintroduces it believing it does something.
+
+---
+
+## 3. `gmc.py:283` compares `prevPoints` with itself
+
+In tracklab's bundled `bot_sort/gmc.py`, `applySparseOptFlow` guards the affine
+estimate with:
+
+```python
+if (np.size(prevPoints, 0) > 4) and (np.size(prevPoints, 0) == np.size(prevPoints, 0)):
+```
+
+The second clause is a tautology. It was evidently intended to be
+`np.size(currPoints, 0)`, i.e. a check that the two correspondence arrays have
+equal length.
+
+**Currently harmless:** both arrays are appended to in lockstep in the loop
+immediately above, so their lengths cannot diverge. The intended check simply
+does not exist.
+
+**Not fixed here** because it is upstream (tracklab's vendored fork of boxmot),
+and patching a dependency in place would be invisible to anyone reading this
+repository and lost on the next reinstall.
+
+**Related, and not a defect but a property to know:** when that guard fails,
+`applySparseOptFlow` executes `print('Warning: not enough matching points')` and
+returns `H = np.eye(2, 3)` — an identity warp, meaning camera-motion compensation
+is silently off for that frame. It **prints; it does not log**, so the evidence
+never reaches the log file. The Kaggle notebook tees stdout during Stage 3 for
+exactly this reason, and the CMC assertion reads that capture.
+
+---
+
+## 4. Evaluation drops detections with a null `bbox_pitch`
+
+`tracklab/wrappers/dataset/soccernet/soccernet_game_state.py:91-100`:
+
+```python
+# Detections with no track_id will therefore be removed and not count as FP at evaluation
+dataframe.dropna(subset=["track_id", "bbox_ltwh", "bbox_pitch"], how="any", inplace=True)
+```
+
+`how="any"` means a detection is removed if **any** of the three is null — so a
+calibration failure does not produce false positives, it **shrinks the evaluated
+set**. Lost true positives cost recall, but silently, and a whole sequence nulled
+by `_empty_outputs` in the calibration stage looks like a clean run.
+
+**Consequence for the A/B:** if the Option A and BroadTrack arms produce
+materially different non-null `bbox_pitch` counts, they are not being scored on
+the same detections, and the GS-HOTA delta partly measures *willingness to
+abstain* rather than calibration quality. The notebook therefore reports the
+non-null count per arm as a first-class result and, when the counts differ, also
+scores both arms on the intersection.
+
+**Not "fixed":** the behaviour is upstream and arguably correct for the
+challenge's scoring rules. It is the *interpretation* that has to account for it.

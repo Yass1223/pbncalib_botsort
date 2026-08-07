@@ -100,3 +100,11 @@ scripts/             setup, verification and evaluation
 tests/               contract and unit tests
 notebooks/           Kaggle pipeline notebook
 ```
+
+## Known limitations
+
+Four defects are understood, deliberate and unfixed — the image-space spatial
+gate, the inert `track` batch size, an upstream tautology in the GMC guard, and
+the evaluator dropping detections with a null `bbox_pitch`. Each is recorded in
+[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) with what it does and does not
+invalidate. Read section 4 before interpreting any A/B result.
