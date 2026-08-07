@@ -183,7 +183,19 @@ class NotebookBoTSORT(_fork.BoTSORT):
         STrack.multi_predict(strack_pool)
 
         # -- camera motion compensation (SOF) ---------------------------------
-        warp = self.gmc.apply(img, ltrb_first)
+        # The detection array is an EXCLUSION MASK: GMC blanks those regions
+        # before picking corners, so that player motion is not mistaken for
+        # camera motion. Passing only the high-confidence set left every
+        # detection in the [track_low_thresh, track_high_thresh) band unmasked --
+        # numerous in soccer, and moving -- so their motion contaminated the
+        # "static background" estimate. Mask everything the detector proposed
+        # above min_confidence, both BYTE bands.
+        #
+        # This trades one risk for another: a larger mask leaves fewer corners,
+        # and applySparseOptFlow falls back to an identity warp (silently, via
+        # print) when fewer than 5 survive. That failure rate is the thing to
+        # watch when measuring this change -- see the CMC assertion in Stage 3.
+        warp = self.gmc.apply(img, ltrb)
         STrack.multi_gmc(strack_pool, warp)
         STrack.multi_gmc(unconfirmed, warp)
 
