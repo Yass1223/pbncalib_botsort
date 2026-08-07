@@ -126,3 +126,36 @@ scores both arms on the intersection.
 
 **Not "fixed":** the behaviour is upstream and arguably correct for the
 challenge's scoring rules. It is the *interpretation* that has to account for it.
+
+---
+
+## 5. Investigated and disproved: the tracklet EMA is *not* harmed by zero features
+
+Recorded so it is not re-raised. A static audit flagged
+`gta_link_api.py` for seeding the per-tracklet appearance EMA with `gf[0]`, which
+is a zero vector whenever the tracklet's first crop failed. The concern was that
+at `ema_alpha = 0.9` a zero seed would bias the embedding for dozens of
+detections.
+
+**It does not.** The loop renormalises after every step:
+
+```python
+emb = self.ema_alpha * emb + (1.0 - self.ema_alpha) * v
+emb /= (np.linalg.norm(emb) + 1e-6)
+```
+
+- **zero seed** — `0.9·0 + 0.1·v₁ = 0.1·v₁`, which normalises to exactly `v₁`.
+  The zero is erased in a single update.
+- **zero mid-sequence** — `0.9·emb + 0.1·0 = 0.9·emb`, which normalises to
+  `emb`. A literal no-op.
+- **all zero** — stays zero, sits at cosine distance 1.0 from everything, and is
+  therefore unmergeable. Unchanged, and now reported by the zero-feature counter
+  in `_extract_features`.
+
+Measured: filtering zero rows before the EMA changes the resulting embedding by
+at most **1.5e-6** across 2000 randomised tracklets (20-60 detections, 15% zeros,
+half of them seeded at position 0) — float noise from the `1e-6` epsilon.
+
+A `fix/f12-ema-seed` branch was written and then abandoned on this evidence. The
+zero-feature *counters* remain valuable — they reveal crops that failed — but the
+EMA needs no change.
