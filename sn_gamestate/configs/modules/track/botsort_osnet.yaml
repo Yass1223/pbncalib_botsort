@@ -33,12 +33,21 @@ _target_: sn_gamestate.track.bot_sort_notebook.NotebookBotSORT
 cfg:
   model_weights: ${hf:${hf_weights_repo},sports_model.pth.tar-60,osnet_x1_0_sports.pt}
   fp16: true
-  min_confidence: 0.1
+  # MUST be <= hyperparams.track_low_thresh, or the BYTE second pass is
+  # starved. This filter runs BEFORE update() (bot_sort_notebook.py:351),
+  # so anything it removes never reaches the low-confidence association at
+  # all. At the previous value of 0.1 the configured track_low_thresh=0.05
+  # was inert: the effective low band was [0.1, 0.3) rather than
+  # [0.05, 0.3), which is exactly the fork behaviour this subclass exists
+  # to fix. Kept equal to track_low_thresh so the two cannot silently
+  # disagree again.
+  min_confidence: 0.05
   use_tensorrt: ${use_tensorrt}
   trt_engine: ${trt_dir}/osnet_x1_0_sports.engine
   hyperparams:
     track_high_thresh: 0.3
-    track_low_thresh: 0.05   # BYTE low gate (notebook value; the fork hard-coded 0.1)
+    track_low_thresh: 0.05   # BYTE low gate. Only operative while
+                             # cfg.min_confidence <= this value -- see the note there.
     new_track_thresh: 0.4
     track_buffer: 60
     match_thresh: 0.85
