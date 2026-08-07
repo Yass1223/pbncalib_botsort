@@ -60,6 +60,22 @@ dependencies = [
     # either cannot silently break calibration at import time.
     "matplotlib==3.9.4",
     "scipy==1.13.1",
+    # huggingface_hub 1.0 removed HfFolder. Something in the transitive tree
+    # still imports it at module load, which took out 5 of the 14 stages at
+    # preflight (yolo_snft_api, prtreid_api, bot_sort_notebook,
+    # MajorityVoteTracklet, TrackEvalEvaluator).
+    #
+    # It is NOT our code: every huggingface_hub call in this repository is
+    # hf_hub_download / snapshot_download / try_to_load_from_cache, all of which
+    # survive in 1.x. It is NOT tracklab's own source either -- zero HfFolder
+    # references in the whole 1.3.24 wheel. It is one of the 30 dependencies
+    # tracklab declares WITHOUT a version bound (transformers, huggingface-hub,
+    # ultralytics, accelerate, lightning, pandas, hydra-core, ... all bare
+    # names). See KNOWN_LIMITATIONS.md section 6.
+    #
+    # The floor is 0.23 because that is where the cache layout and
+    # try_to_load_from_cache signature this repo relies on settled.
+    "huggingface_hub>=0.23,<1.0",
 ]
 
 [project.entry-points.tracklab_plugin]

@@ -159,3 +159,69 @@ half of them seeded at position 0) — float noise from the `1e-6` epsilon.
 A `fix/f12-ema-seed` branch was written and then abandoned on this evidence. The
 zero-feature *counters* remain valuable — they reveal crops that failed — but the
 EMA needs no change.
+
+---
+
+## 6. The dependency tree is almost entirely unpinned
+
+Two version-drift failures have now cost a session each: `shapely` absent
+entirely, then `huggingface_hub` resolving to 1.x and removing `HfFolder`. Both
+have the same structural cause, recorded here so the third one is expected.
+
+### tracklab pins nothing
+
+`tracklab-1.3.24`'s own `METADATA` declares **30 dependencies and bounds none of
+them**. Every entry is a bare name:
+
+```
+hydra-core  lightning  pytorch_lightning  numpy  ultralytics  filterpy  torch
+torchvision  soccernet  yt-dlp  gdown  pandas  matplotlib  rich  tabulate
+sn-trackeval  lap  distinctipy  rtmlib  transformers  accelerate
+huggingface-hub  opencv-python  tqdm  omegaconf  requests  wandb  scipy
+yacs  scikit-image
+```
+
+Anything we do not bound in our own `pyproject.toml` resolves to whatever is
+newest on the day the venv is built. That is why a fresh resolve on a machine
+that has never run this pipeline behaves differently from one built months ago,
+and why `uv.lock` being uncommitted (see the README) trades reproducibility for
+correctness — the lock was stale in the other direction.
+
+Highest remaining risk from that list, by likelihood of a breaking change on a
+path this pipeline actually uses:
+
+| Package | Why it is exposed |
+|---|---|
+| `transformers` | canonical `HfFolder` importer; the prime suspect for the failure that prompted this section |
+| `ultralytics` | the detector. Frequent default and API changes; already forced one subclass (`YOLOUltralyticsSNFT`) to pin `imgsz`, `conf` and `iou` explicitly because the stock wrapper inherited whatever ultralytics defaulted to |
+| `hydra-core` / `omegaconf` | every config in the repo resolves through these |
+| `pandas` | 3.0 changes copy/view semantics; the engine contract passes DataFrames between every stage |
+| `lightning` / `pytorch_lightning` | heavy, breaks often, and only the discarded TVCalib module ever needed them |
+| `sn-trackeval` | produces the GS-HOTA numbers the whole A/B rests on |
+
+### Our own two git dependencies have no revision
+
+Worse than an unpinned PyPI package, because there is not even a version to
+record:
+
+```toml
+"prtreid @ git+https://github.com/VlSomers/prtreid",
+"torchreid @ git+https://github.com/VlSomers/bpbreid",
+```
+
+Both resolve to the default branch's **HEAD at install time**. `prtreid` is the
+ReID model behind team clustering and role classification; `torchreid`/`bpbreid`
+supplies the OSNet loader used by BoT-SORT's appearance association and by
+GTA-Link. A silent upstream commit changes embedding behaviour with nothing in
+the repository to point at, and no way to tell two runs apart after the fact.
+
+**Not fixed here** because pinning them to a commit is a *behavioural* change —
+it would freeze a specific model implementation, which may differ from whatever
+produced any previously recorded number. It belongs on its own branch, measured,
+like every other behavioural change. But it is the single largest unpinned
+surface in the project, and it is in our `pyproject.toml`, not tracklab's.
+
+**What to do about it:** capture `uv pip freeze` from the first successful Kaggle
+venv as an artefact, and pin the two git dependencies to the commits that build
+resolved. That converts an unbounded surface into a recorded one without
+guessing which commit is "right".
