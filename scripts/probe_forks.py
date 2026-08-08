@@ -58,7 +58,15 @@ def verdict(tag, answer, detail, evidence=(), concern=False):
 
 
 def get_source(dotted):
-    """'pkg.mod:Attr.method' -> source text, or None."""
+    """'pkg.mod:Attr.method' -> source text, or None.
+
+    DEFECT 1 THIS GUARDS AGAINST (UNRESOLVED, never SILENT). The first version
+    of this probe reported F4 as "SILENT -- 0 print() / 0 log call(s)". That was
+    not a finding about the fork; it was this function returning nothing and the
+    caller reading absence-of-evidence as evidence-of-absence. A probe that
+    cannot see its target must say UNRESOLVED. Reporting SILENT is worse than
+    reporting nothing, because it looks like an answer.
+    """
     mod_path, _, attr = dotted.partition(":")
     try:
         mod = importlib.import_module(mod_path)
@@ -75,8 +83,41 @@ def get_source(dotted):
         return None, f"{type(exc).__name__}: {exc}"
 
 
+def get_class_source(dotted):
+    """Whole-CLASS source, not one method.
+
+    DEFECT 2a THIS GUARDS AGAINST. F4 read SILENT partly because the candidate
+    list resolved `GMC.apply` first and stopped there -- but `apply` is only the
+    DISPATCHER. The `print('Warning: not enough matching points')` lives in
+    `applySparseOptFlow`, one level down. Grepping a single method answers a
+    question nobody asked. Always grep the whole class.
+    """
+    return get_source(dotted)
+
+
 def grep(src, pattern, flags=re.I):
     return [ln.strip() for ln in src.splitlines() if re.search(pattern, ln, flags)]
+
+
+def call_sites(src, name):
+    """Lines where `name` is CALLED, excluding its own definition.
+
+    DEFECT 2b THIS GUARDS AGAINST (presence != call site). F7 read "MIXED --
+    both conversions present" because it grepped for the SYMBOLS
+    `tlwh_to_xyah` and `tlwh_to_xywh`. Both exist. But `tlwh_to_xyah` is defined
+    at bot_sort.py:198 and **never called**: every state path -- activate:116,
+    re_activate:127, update:155 -- uses `tlwh_to_xywh`. A symbol being defined
+    says nothing about whether the code path is taken. This counts invocations
+    (`name(`) and skips `def name`.
+    """
+    out = []
+    for ln in src.splitlines():
+        t = ln.strip()
+        if re.match(rf"\s*def\s+{re.escape(name)}\b", ln):
+            continue
+        if re.search(rf"\b{re.escape(name)}\s*\(", t):
+            out.append(t)
+    return out
 
 
 # --------------------------------------------------------------------------- F2
@@ -106,25 +147,42 @@ def probe_f2():
 # --------------------------------------------------------------------------- F4
 def probe_f4():
     hdr("F4 — GMC failure path: does it log, and what does it return?")
+    # WHOLE CLASS, not GMC.apply. apply is the dispatcher; the print lives in
+    # applySparseOptFlow. The fork is installed as `bot_sort` (not `boxmot`),
+    # so that name is tried first and boxmot is only a fallback.
     src = None
-    for dotted in ("bot_sort.gmc:GMC.apply", "bot_sort.gmc:GMC.applySparseOptFlow",
-                   "boxmot.motion.cmc.sof:SOF.apply", "bot_sort.gmc:GMC"):
-        s, err = get_source(dotted)
+    for dotted in ("bot_sort.gmc:GMC", "boxmot.motion.cmc.sof:SOF"):
+        s, err = get_class_source(dotted)
         if s:
             src = s
-            print(f"       {DIM}source: {dotted}{RESET}")
+            print(f"       {DIM}source: {dotted} (whole class, "
+                  f"{len(s.splitlines())} lines){RESET}")
             break
     if src is None:
-        verdict("F4", "UNRESOLVED", "no GMC source found", concern=True)
+        # UNRESOLVED, never SILENT -- absence of evidence is not evidence.
+        verdict("F4", "UNRESOLVED",
+                "GMC class source not importable; this probe cannot see the "
+                "failure path and refuses to call it silent", concern=True)
+        return
+    if "applySparseOptFlow" not in src:
+        verdict("F4", "UNRESOLVED",
+                "applySparseOptFlow not in the class source -- probing the wrong "
+                "object", concern=True)
         return
     prints = grep(src, r"\bprint\s*\(")
     logs = grep(src, r"\b(log|logger|LOGGER|warnings)\.")
     identity = grep(src, r"np\.eye|return\s+H\b|H\s*=\s*np\.eye")
+    if not prints and not logs:
+        verdict("F4", "UNRESOLVED",
+                "no print() and no log call found anywhere in the class -- "
+                "implausible for this fork; suspect the probe, not the code",
+                concern=True)
+        return
     concern = bool(prints) and not logs
     verdict("F4",
-            "PRINTS, DOES NOT LOG" if concern else ("LOGS" if logs else "SILENT"),
-            f"{len(prints)} print() / {len(logs)} log call(s) on the failure path",
-            prints + logs, concern=concern or not (prints or logs))
+            "PRINTS, DOES NOT LOG" if concern else "LOGS",
+            f"{len(prints)} print() / {len(logs)} log call(s) in the class",
+            prints + logs, concern=concern)
     if identity:
         print(f"       {DIM}identity-return sites:{RESET}")
         for ln in identity[:6]:
@@ -136,30 +194,38 @@ def probe_f4():
 
 # --------------------------------------------------------------------------- F7
 def probe_f7():
+    """CALL SITES, not symbol presence. See call_sites() for why."""
     hdr("F7 — Kalman state vector: (x, y, w, h) or (x, y, a, h)?")
-    hits_all = []
-    for dotted in ("bot_sort.bot_sort:STrack.activate",
-                   "bot_sort.bot_sort:STrack.update",
-                   "bot_sort.bot_sort:STrack",
-                   "bot_sort.kalman_filter:KalmanFilter.initiate"):
-        s, _ = get_source(dotted)
-        if not s:
-            continue
-        hits_all += grep(s, r"tlwh_to_xyah|tlwh_to_xywh|xyah|xywh|aspect")
-    if not hits_all:
-        verdict("F7", "UNRESOLVED", "no state-conversion calls found", concern=True)
+    src, err = get_class_source("bot_sort.bot_sort:STrack")
+    if src is None:
+        verdict("F7", "UNRESOLVED", f"STrack source not importable ({err})",
+                concern=True)
         return
-    xyah = any("xyah" in h for h in hits_all)
-    xywh = any("xywh" in h for h in hits_all)
+    xyah = call_sites(src, "tlwh_to_xyah")
+    xywh = call_sites(src, "tlwh_to_xywh")
+    defined = grep(src, r"def\s+tlwh_to_(xyah|xywh)")
+    print(f"       {DIM}defined: {len(defined)} conversion(s); "
+          f"CALLED: xyah {len(xyah)}, xywh {len(xywh)}{RESET}")
+    for ln in defined:
+        print(f"       {DIM}| def  {ln[:100]}{RESET}")
+    if not xyah and not xywh:
+        verdict("F7", "UNRESOLVED",
+                "conversions may be defined but NO call site found -- the state "
+                "path is not visible to this probe", concern=True)
+        return
     if xywh and not xyah:
-        verdict("F7", "(w, h) — CORRECT", "BoT-SORT state vector, matches the paper",
-                hits_all)
+        verdict("F7", "(w, h) — CORRECT",
+                f"{len(xywh)} call site(s), all tlwh_to_xywh; tlwh_to_xyah is "
+                f"{'defined but never called' if defined else 'absent'}", xywh)
     elif xyah and not xywh:
-        verdict("F7", "(a, h) — MISMATCH", "ByteTrack state vector in a BoT-SORT "
-                "tracker: the classic transplant error", hits_all, concern=True)
+        verdict("F7", "(a, h) — MISMATCH",
+                "ByteTrack state vector in a BoT-SORT tracker: the classic "
+                "transplant error", xyah, concern=True)
     else:
-        verdict("F7", "MIXED", "both conversions present — read the lines",
-                hits_all, concern=True)
+        verdict("F7", "MIXED — GENUINELY",
+                f"both are CALLED ({len(xywh)} xywh / {len(xyah)} xyah), which is "
+                f"a real inconsistency rather than a symbol-presence artefact",
+                xywh + xyah, concern=True)
 
 
 # --------------------------------------------------------------------------- F8

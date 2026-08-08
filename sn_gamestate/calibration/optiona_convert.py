@@ -11,10 +11,10 @@ wrong pitch coordinates without raising:
 
 * :func:`optiona_camera_to_sncalib` — the schema conversion, derived in the
   Task 1 audit and verified numerically by the gate.
-* :func:`get_bbox_pitch` — copied verbatim from ``broadtrack_api.py`` so the
-  ``bbox_pitch`` numerics stay byte-compatible with the BroadTrack path we are
-  A/B-ing against. ``sn_gamestate.calibration.bbox2pitch`` no longer exists;
-  there is no shared helper to import.
+* :func:`get_bbox_pitch` — originally copied verbatim from ``broadtrack_api.py``
+  so the ``bbox_pitch`` numerics were byte-compatible with the BroadTrack arm.
+  Both that module and ``sn_gamestate.calibration.bbox2pitch`` are gone (see
+  KNOWN_LIMITATIONS.md section 7); this is now the only definition.
 """
 import numpy as np
 
@@ -108,9 +108,9 @@ def principal_point_offset(cam) -> float:
 def get_bbox_pitch(cam):
     """Bottom-left / bottom-right / bottom-middle unprojection onto the Z=0 plane.
 
-    Copied verbatim from ``broadtrack_api.get_bbox_pitch`` so the ``bbox_pitch``
-    schema and numerics match the BroadTrack path exactly — that comparability is
-    the whole point of the A/B. ``unproject_point_on_planeZ0`` undistorts by
+    Originally copied verbatim from ``broadtrack_api.get_bbox_pitch`` (removed; see
+    KNOWN_LIMITATIONS.md section 7) so the schema and numerics matched the
+    BroadTrack arm exactly while the A/B was live. ``unproject_point_on_planeZ0`` undistorts by
     default, so ``k1`` is honoured.
     """
     def _get_bbox(bbox_ltrb):

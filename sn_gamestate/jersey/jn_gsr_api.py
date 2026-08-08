@@ -215,10 +215,34 @@ class JNGsrTrackletRecognizer(VideoLevelModule):
                 results = None
         if results is None:
             if not self.venv_python.is_file() or not self.worker.is_file():
+                # GATE, do not continue. A missing venv is a PROVISIONING failure,
+                # not a data condition, and the two must not be confused.
+                #
+                # Continuing here is what produced every run to date: jersey_number
+                # 0/12996 non-null, tracklet_agg voting over {None: 0.0}, and a
+                # GS-HOTA figure scoring a component that was structurally absent --
+                # reported at ERROR, and completely invisible in the final number.
+                # An unprovisioned stage must stop the run, because a metric
+                # computed without it is not a worse measurement, it is a different
+                # measurement wearing the same name.
+                #
+                # Failures that ARE data conditions (a worker crash on a specific
+                # sequence, a timeout, tracklets missing from the output) still
+                # degrade to empty columns below: those are legitimately
+                # per-sequence and must not take down a whole run.
+                if not bool(getattr(self.cfg, "allow_unprovisioned", False)):
+                    raise RuntimeError(
+                        f"[jn_gsr] jersey stage is not provisioned: missing venv "
+                        f"python ('{self.venv_python}') or worker "
+                        f"('{self.worker}'). Run scripts/setup_jn_gsr.sh before the "
+                        f"pipeline. Refusing to score {seq} with the jersey "
+                        f"component structurally absent -- set "
+                        f"cfg.allow_unprovisioned=true to override deliberately."
+                    )
                 log.error(
-                    f"[jn_gsr] missing venv python ('{self.venv_python}') or worker "
-                    f"('{self.worker}'). Run scripts/setup_jn_gsr.sh first. "
-                    f"Jersey numbers left empty for {seq}.")
+                    f"[jn_gsr] UNPROVISIONED and allow_unprovisioned=true: jersey "
+                    f"numbers left empty for {seq}. Any metric from this run "
+                    f"excludes the jersey component entirely.")
                 return detections
             run_dir = self.cache_dir / f"_run_{seq}_{mhash[:8]}"
             run_dir.mkdir(parents=True, exist_ok=True)

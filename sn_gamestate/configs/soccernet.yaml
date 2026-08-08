@@ -1,3 +1,18 @@
+# SoccerNet Game State Reconstruction -- the pipeline.
+#
+# ONE entry config, ONE path:  tracklab -cn soccernet
+#
+# Calibration is Option A (PnLCalib per-frame + so(3)/log-focal smoothing),
+# sn_gamestate.calibration.optiona_api. The BroadTrack arm and its
+# soccernet_optiona.yaml counterpart were removed once the comparison was
+# settled -- see KNOWN_LIMITATIONS.md section 7.
+#
+# There is no separate `pitch` stage: PnLCalib runs its own keypoint and line
+# detectors internally and emits camera parameters directly.
+#
+# Provisioning (both required, both run by the Kaggle notebook Stage 2):
+#   bash scripts/setup_pnlcalib.sh    # clone + SV_kp / SV_lines
+#   bash scripts/setup_jn_gsr.sh      # jersey venv + checkpoints  <- GATES the run
 # SoccerNet Game State Reconstruction — clean pipeline.
 #
 # ONE entry config, ONE path through the pipeline. No alternative backends.
@@ -6,7 +21,7 @@
 #   reid           prtreid (bpbreid/HRNet32, 256-d)           -> embeddings, role_detection
 #   track          BoT-SORT · SOF + sports-OSNet (boxmot parity) -> track_id
 #   gta_link       offline tracklet stitching (own OSNet)     -> track_id (merged)
-#   calibration    BroadTrack (EVS, WACV'25) + image-to-pitch -> parameters, bbox_pitch
+#   calibration    Option A: PnLCalib + temporal smoothing    -> parameters, bbox_pitch
 #   jersey_number  jn_pipeline_gsr (legibility -> DBNet++ -> PARSeq), multi-GPU
 #   tracklet_agg   majority vote over [jersey_number, role]
 #   team           k-means on prtreid embeddings
@@ -16,10 +31,9 @@
 # detectors internally and emits camera parameters directly.
 #
 # First-time provisioning (both are Docker-free, Kaggle/Lightning friendly):
-#   bash scripts/setup_broadtrack.sh      # C++ binary + LFS weights, built natively
 #   bash scripts/setup_jn_gsr.sh          # python 3.10 venv + 3 checkpoints
 # Verify the calibration conversion before trusting metrics:
-#   python scripts/verify_broadtrack_conversion.py -c <calib.json> -f <frames dir>
+#   python scripts/verify_optiona_conversion.py
 # Run:
 #   tracklab -cn soccernet
 # Reference metrics (saved separately from the pipeline eval):
@@ -36,7 +50,7 @@ defaults:
   - modules/reid: prtreid
   - modules/track: botsort_osnet
   - modules/gta_link: gta_link
-  - modules/calibration: broadtrack
+  - modules/calibration: optiona
   - modules/jersey_number_detect: jn_gsr
   - modules/tracklet_agg: voting_role_jn
   - modules/team: kmeans_embeddings

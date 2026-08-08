@@ -225,3 +225,54 @@ surface in the project, and it is in our `pyproject.toml`, not tracklab's.
 venv as an artefact, and pin the two git dependencies to the commits that build
 resolved. That converts an unbounded surface into a recorded one without
 guessing which commit is "right".
+
+### transformers disables its torch models under torch 1.13 — expected
+
+Every run log opens with:
+
+```
+Disabling PyTorch because PyTorch >= 2.1 is required but found 1.13.1
+```
+
+That is `transformers` (pulled in unbounded by tracklab) declining to register its
+PyTorch model classes. **It is harmless here.** Nothing in this pipeline uses a
+transformers model: tracklab's only two importers are
+`wrappers/bbox_detector/transformers_api.py` and
+`wrappers/pose_estimator/transformers_api.py`, and neither is in our config.
+The line is noise, not a warning — recorded so it is not mistaken for one.
+
+---
+
+## 7. BroadTrack removed
+
+The BroadTrack calibration arm existed to answer one question: is Option A
+better? It was, and the arm then cost more to maintain than it returned.
+
+**Removed:** `sn_gamestate/calibration/broadtrack_api.py`,
+`sn_gamestate/configs/modules/calibration/broadtrack.yaml`,
+`scripts/setup_broadtrack.sh`, `scripts/verify_broadtrack_conversion.py`, and the
+notebook's Stage 4 second arm. `soccernet_optiona.yaml` became the content of
+`soccernet.yaml` and was deleted, so there is **one entry point**:
+`tracklab -cn soccernet`.
+
+**Last present at `8f611d1`.** Recoverable in full from history:
+
+```bash
+git show 8f611d1:sn_gamestate/calibration/broadtrack_api.py
+git log --all --full-history -- sn_gamestate/calibration/broadtrack_api.py
+```
+
+**Final comparison, on SNGS-021:** Option A **GS-HOTA 54.321** (DetA 34.789,
+AssA 84.824, LocA 93.914) against BroadTrack **34.544 or 41.072** — two
+BroadTrack logs collided and the pairing was never resolved. That ambiguity is
+recorded rather than hidden, and is no longer relevant: both candidate values sit
+far below Option A, so the ordering was never in doubt even though the margin is.
+
+Both arms scored the **identical 11,870 detections** (imbalance 0.00%), so
+section 4's abstention concern does not apply to that result — see
+`docs/AUDIT_FINDINGS.md`.
+
+Lineage references to BroadTrack survive throughout `optiona_sfr/` and in
+`KNOWN_LIMITATIONS.md` section 3. Those are correct: the temporal layer is a
+reimplementation of BroadTrack's published objective, and `gmc.py` is still the
+GMC in use. Only the *arm* is gone, not the intellectual debt.

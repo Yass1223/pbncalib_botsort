@@ -19,12 +19,15 @@ team_side      mean pitch position
 There is **no separate `pitch` stage**: PnLCalib runs its own keypoint (57+1) and
 line (23+1) HRNet-w48 detectors and emits camera parameters directly.
 
-## Entry points
+## Entry point
 
-| Config | Calibration stage |
-|---|---|
-| `tracklab -cn soccernet_optiona` | Option A (PnLCalib + smoothing) |
-| `tracklab -cn soccernet` | BroadTrack (the A/B baseline) |
+```bash
+tracklab -cn soccernet
+```
+
+One config, one path. The BroadTrack arm was removed once the comparison was
+settled — see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) section 7 for the
+final numbers and how to recover it from history.
 
 ## Setup
 
@@ -33,13 +36,21 @@ bash scripts/setup_pnlcalib.sh    # clone PnLCalib + v1.0.0 SV_kp / SV_lines
 bash scripts/setup_jn_gsr.sh      # jersey-number venv + checkpoints
 ```
 
+**Both are mandatory.** The jersey stage now *raises* when unprovisioned rather
+than logging an error and continuing. Earlier runs scored GS-HOTA with
+`jersey_number` 0/12996 non-null and `tracklet_agg` voting over `{None: 0.0}` —
+a metric missing a component is not a worse measurement, it is a different one
+wearing the same name. Override deliberately with
+`modules.jersey_number_detect.cfg.allow_unprovisioned=true`.
+
 PnLCalib is GPL-2.0 and is **cloned at runtime, never vendored**. Weights,
 SoccerNet data, calibration caches and the clone are all gitignored.
 
-`uv.lock` is deliberately **not** committed: `shapely`, `matplotlib` and `scipy`
-became direct dependencies for the calibration stage and the previous lock
-predates them, so a stale `uv sync` would install an environment in which the
-stage fails at import. Resolve fresh:
+`uv.lock` is generated on Kaggle from the pinned `pyproject.toml` and committed
+from there — it cannot be produced on a machine without `uv`. The two git
+dependencies are now pinned to the commits the first successful run resolved to
+(`docs/venv_freeze_2026-08-07.txt` is that environment). Until the lock lands,
+resolve fresh:
 
 ```bash
 uv venv --python 3.9 .venv && uv pip install --python .venv -e .
@@ -103,8 +114,27 @@ notebooks/           Kaggle pipeline notebook
 
 ## Known limitations
 
-Four defects are understood, deliberate and unfixed — the image-space spatial
-gate, the inert `track` batch size, an upstream tautology in the GMC guard, and
-the evaluator dropping detections with a null `bbox_pitch`. Each is recorded in
-[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) with what it does and does not
-invalidate. Read section 4 before interpreting any A/B result.
+Seven entries in [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md), each with what it
+does and does not invalidate — the image-space spatial gate, the inert `track`
+batch size, an upstream tautology in the GMC guard, the evaluator dropping
+detections with a null `bbox_pitch`, a disproved EMA concern, the unpinned
+dependency tree, and the BroadTrack removal.
+
+Measured closures and what is still open live in
+[docs/AUDIT_FINDINGS.md](docs/AUDIT_FINDINGS.md), with every line marked
+read-from-artifact or read-from-source.
+
+## Instrumentation rules
+
+Two, both learned the hard way:
+
+1. **Never instantiate an `*Api` class from instrumentation.** `GTALink(cfg, ...)`
+   crashes outside hydra — the yaml carries `${...}` interpolations and the custom
+   `${hf:}` resolver, neither of which resolves in a bare `OmegaConf.load`.
+   Instrumentation reads *artifacts* and builds models *directly*.
+2. **A probe that cannot see its target reports UNRESOLVED, never a verdict.**
+   `fork_probe.json` once reported `F4 = SILENT` because it grepped a dispatcher
+   instead of the implementation, and `F7 = MIXED` because it grepped for symbol
+   *presence* when the question was whether the call site is taken. Absence of
+   evidence rendered as evidence of absence is the worst failure an instrument can
+   have, because it looks like an answer.
