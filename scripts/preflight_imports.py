@@ -24,6 +24,14 @@ import sys
 import traceback
 from pathlib import Path
 
+# APPLY the precondition, do not advise it. This script used to detect that every
+# stage failed at `import matplotlib` and then print "Fix by: export
+# MPLBACKEND=Agg" -- a check that could state the precondition but left the human
+# to satisfy it. Setting it here is the same one line, and it must happen before
+# any import pulls matplotlib in transitively.
+# setdefault, not assignment: an explicit backend from the caller wins.
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "sn_gamestate" / "configs"
 TARGET_RE = re.compile(r"^\s*_target_:\s*(\S+)\s*$", re.MULTILINE)
 
@@ -132,8 +140,11 @@ def main(argv: list[str] | None = None) -> int:
         print("This is the ENVIRONMENT, not dependency drift -- pyproject.toml "
               "is not the problem.")
         print(f"    {DIM}{next(iter(reasons))}{RESET}")
-        print("Fix by forcing a backend that needs no GUI or kernel:")
-        print("    export MPLBACKEND=Agg\n")
+        # This script already sets MPLBACKEND=Agg at import time, so reaching
+        # here means the backend was NOT the cause, or something overrode it.
+        print(f"MPLBACKEND is {os.environ.get('MPLBACKEND')!r} in this process, "
+              f"so a missing backend is not the explanation -- read the reason "
+              f"above.\n")
     else:
         print(f"{YELLOW}These are almost always unpinned transitive "
               f"dependencies that drifted forward.{RESET}")

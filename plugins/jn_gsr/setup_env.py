@@ -103,10 +103,24 @@ def build():
     sh(f"{PY} -m pip install -q {C} numpy==1.25.2")
     # NO Jupyter-kernel registration: Kaggle cannot switch a notebook's kernel,
     # so this venv is used only as a subprocess interpreter (PYBIN).
-    if os.path.isdir("str/parseq"):
-        sh(f"{PY} -m pip install -q {C} -e str/parseq --no-deps")
-    else:
-        print("[warn] str/parseq not found -- PARSeq (strhub) NOT installed")
+    # ENFORCE, do not warn. PARSeq is not optional: the jersey worker cannot
+    # recognise a single digit without it, and a venv built without strhub is
+    # not a usable venv -- it just fails later, after the checkpoint fetch.
+    if not os.path.isdir("str/parseq"):
+        raise SystemExit(
+            "str/parseq not found -- PARSeq (strhub) cannot be installed.\n"
+            "  The jersey stage is inoperable without it, so building the rest\n"
+            "  of this venv would only defer the failure. Re-vendor str/parseq\n"
+            "  and re-run.")
+    if not os.path.isfile("str/parseq/strhub/data/utils.py"):
+        raise SystemExit(
+            "str/parseq/strhub/data/ is missing (or lacks utils.py).\n"
+            "  strhub/models/base.py imports strhub.data.utils, so strhub will\n"
+            "  not import and the PARSeq load gate WILL fail -- after this venv\n"
+            "  build and a 382 MB download. Stopping now instead.\n"
+            "  Cause is usually an unanchored .gitignore rule excluding the\n"
+            "  vendored tree: git check-ignore -v str/parseq/strhub/data/utils.py")
+    sh(f"{PY} -m pip install -q {C} -e str/parseq --no-deps")
 
 
 def check():
@@ -152,13 +166,19 @@ try:
     # "No module named 'strhub.models'". Import the symbol actually used by
     # run_eval.build_models() so the check fails here instead.
     from strhub.models.utils import load_from_checkpoint
+    from strhub.data.utils import Tokenizer          # the half that went missing
     import strhub; print("strhub (PARSeq): OK")
 except Exception as e:
-    print("strhub (PARSeq): BROKEN --", e)
-    print("   -> str/parseq/strhub must contain models/ and data/ (vendored v1.1.0).")
-    print("      Do NOT substitute upstream baudm/parseq main (v1.2.0): the")
-    print("      SoccerNet PARSeq checkpoint is loaded via Lightning's")
-    print("      load_from_checkpoint and is tied to the 1.1.0 model signature.")
+    # RAISE. This check states a precondition the venv cannot be useful without,
+    # so it enforces it rather than printing advice and exiting 0. Previously it
+    # reported BROKEN and the build "succeeded", leaving a venv that dies at the
+    # jersey stage.
+    raise SystemExit(
+        "strhub (PARSeq) is BROKEN: %s\n"
+        "   str/parseq/strhub must contain BOTH models/ and data/ (vendored\n"
+        "   v1.1.0). Do NOT substitute upstream baudm/parseq main (v1.2.0): the\n"
+        "   SoccerNet PARSeq checkpoint loads via Lightning's\n"
+        "   load_from_checkpoint and is tied to the 1.1.0 model signature." % e)
 import fire; print("fire (lmdb tool): OK")
 try:
     import SoccerNet; print("SoccerNet (downloader): OK")

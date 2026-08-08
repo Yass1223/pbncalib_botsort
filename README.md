@@ -126,7 +126,27 @@ read-from-artifact or read-from-source.
 
 ## Instrumentation rules
 
-Two, both learned the hard way:
+Three, all learned the hard way:
+
+0. **Any check that can state a precondition must ENFORCE it, not report it.**
+   If a message tells the human what to fix, the code could have gated on it.
+   Warnings are for conditions with no mechanical remedy; everything else raises.
+
+   This was violated four times before it was written down, and each cost a run:
+   `preflight_imports.py` detected the matplotlib backend failure and printed
+   `export MPLBACKEND=Agg` instead of setting it; `setup_env.py` printed
+   `strhub (PARSeq): BROKEN` and exited 0, leaving a venv that died at the jersey
+   stage; the same file warned `str/parseq not found` and built the rest of the
+   venv anyway; and the notebook printed `MANDATORY SEQUENCE(S) NOT PRESENT` and
+   proceeded to audit only the easy sequences. All four now raise.
+
+   The test is simple: if the message contains an imperative -- "run", "set",
+   "attach", "must contain" -- the check knew the precondition and declined to
+   enforce it. `s`-distribution warnings and the out-of-bounds counter stay
+   warnings, because there is no mechanical remedy for "this camera looks stale";
+   that is a judgement for a human.
+
+Then:
 
 1. **Never instantiate an `*Api` class from instrumentation.** `GTALink(cfg, ...)`
    crashes outside hydra — the yaml carries `${...}` interpolations and the custom

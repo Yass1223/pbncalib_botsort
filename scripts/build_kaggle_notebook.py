@@ -420,8 +420,15 @@ if SPLIT == "test" and not ALLOW_TEST:
     raise SystemExit("refusing to run the audit on the test split")
 missing = [m for m in MUST if m not in by_name]
 if missing:
-    print("*** MANDATORY SEQUENCE(S) NOT PRESENT: %s -- the audit is incomplete"
-          % missing)
+    # RAISE. MUST is not a preference. SNGS-022 is in the list because its
+    # calibration confidence bottomed at s min = 0.000; an audit that quietly
+    # drops it audits only the easy case and reports a clean result. This check
+    # can state its own precondition, so it enforces it.
+    print("MANDATORY SEQUENCE(S) NOT PRESENT: %s" % missing)
+    print("available: %s" % sorted(by_name))
+    raise SystemExit(
+        "refusing to run a five-sequence audit without %s -- it is the "
+        "sequence the audit exists to cover" % missing)
 print("audit sequences (%d):" % len(SEQS))
 for nf, p in picked:
     print("   %-12s %4d frames%s" % (p.name, nf, "   <- mandatory" if p.name in MUST else ""))
