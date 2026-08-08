@@ -230,26 +230,58 @@ tracker on 1/64 of the frames, or with camera-motion compensation dead.
 """))
 
 cells.append(code(r"""
+import json
+
 rc = sh(PY + " scripts/probe_forks.py --json /kaggle/working/fork_probe.json",
         cwd=REPO, check=False)
-
-import json
-probe = {}
+# The probe process must have run: cell 7 reads it and ignored rc before. If the
+# probe itself failed, the fork verdicts that gate Stage 4 are simply absent, and
+# absent is not the same as fine.
+assert rc == 0, ("probe_forks.py failed (rc=%d) -- the fork verdicts that gate "
+                 "Stage 4 are unavailable, so nothing downstream is trustworthy."
+                 % rc)
 try:
     probe = json.load(open("/kaggle/working/fork_probe.json"))
 except Exception as e:
-    print("could not read probe summary:", e)
+    raise SystemExit("probe ran (rc=0) but wrote no readable summary: %s" % e)
 
-# Record the two that gate Stage 4. Do not stop here -- Stage 3 is still
-# informative even if these are bad; it is the A/B that becomes uninterpretable.
 F2 = probe.get("F2", {}).get("answer", "UNRESOLVED")
 F4 = probe.get("F4", {}).get("answer", "UNRESOLVED")
-print("\n" + "=" * 70)
-print("Stage 4 gates:  F2 (batching) = %s   |   F4 (GMC logging) = %s" % (F2, F4))
-print("=" * 70)
-print("Read the F2 evidence lines above and decide explicitly: if batch_size "
-      "reaches a DataLoader for image-level modules, STOP and fix it -- every "
-      "number after this point would be computed on 1/64 of the frames.")
+print("Stage 4 gates:  F2 = %s   |   F4 = %s" % (F2, F4))
+
+
+def _gate(name, answer, bad_prefixes, bad_meaning):
+    # TRI-STATE, asymmetric on purpose. Only a POSITIVE bad verdict halts.
+    #   UNRESOLVED -> print loudly, do NOT raise. The probe has been wrong about
+    #     F4 before (it read SILENT because GMC.apply is a dispatcher and the
+    #     print lives in applySparseOptFlow), so an "I cannot tell" must never
+    #     masquerade as fatal -- nor as healthy.
+    #   a bad-prefix answer -> raise. These are shared-mode defects that depress
+    #     every number after them, so a positive detection stops the run.
+    #   anything else (SAFE / LOGS / ...) -> continue quietly.
+    a = str(answer)
+    if a.upper().startswith("UNRESOLVED"):
+        print("*** %s UNRESOLVED: the probe could not determine this. NOT halting "
+              "-- but this does NOT read as healthy. Confirm by hand before "
+              "trusting the Stage 4 number." % name)
+        return
+    if any(a.startswith(b) for b in bad_prefixes):
+        raise SystemExit(
+            "%s = %s -- positive bad verdict (%s). Halting: this is a shared-mode "
+            "defect that silently depresses every metric downstream." %
+            (name, a, bad_meaning))
+    print("   %s = %s -- not a halting verdict." % (name, a))
+
+
+# F2 now emits a decisive SAFE / BATCHING / UNRESOLVED (probe_forks.py).
+_gate("F2", F2, ("BATCHING", "MULTI"), ">1 image per process() call")
+# F4 static verdicts are LOGS / 'PRINTS, DOES NOT LOG' / UNRESOLVED; none of
+# those means CMC is failing -- 'PRINTS' is the expected state of this fork and
+# is why Stage 3 tees stdout. A genuinely silent failure path would be 'SILENT',
+# which this fork does not produce. So F4's static gate is armed but latent by
+# design: whether CMC is ACTUALLY failing is decided at RUNTIME by the Stage 3
+# count of 'not enough matching points' prints, not here.
+_gate("F4", F4, ("SILENT",), "CMC failure path is unobservable")
 """))
 
 cells.append(md(r"""

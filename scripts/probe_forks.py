@@ -137,11 +137,38 @@ def probe_f2():
         verdict("F2", "UNRESOLVED", f"engine source unavailable ({err})", concern=True)
         return
     hits = grep(eng, r"batch_size|DataLoader|image_filepath|for .*batch|model\.process")
-    verdict("F2", "READ", "engine dispatch lines — confirm one image per process() call:",
-            hits)
-    print(f"       {YELLOW}Decide from the lines above: if batch_size flows from the "
-          f"config into a DataLoader for image-level modules, track: "
-          f"{{batch_size: 64}} in soccernet.yaml is a correctness bug.{RESET}")
+    print(f"       {DIM}engine dispatch (context): "
+          f"{hits[0][:80] if hits else '(none)'}{RESET}")
+
+    # DECISIVE verdict, so the Stage-4 gate has something to act on rather than a
+    # "READ, human decide" that can never trip an assert. The deciding fact is
+    # not the generic ImageLevelModule.dataloader (which honours self.batch_size)
+    # but the TRACK wrapper's __init__: NotebookBotSORT overrides only reset() and
+    # process(), so it inherits BotSORT.__init__, and that is where batch_size is
+    # actually fixed. SAFE = hardcoded 1; BATCHING = it flows from cfg or is > 1.
+    wrap, werr = get_source("tracklab.wrappers.track.bot_sort_api:BotSORT.__init__")
+    if wrap is None:
+        verdict("F2", "UNRESOLVED",
+                f"BotSORT.__init__ source unavailable ({werr}); cannot decide "
+                f"whether the config batch_size reaches a DataLoader", concern=True)
+        return
+    hardcoded_1 = re.search(r"super\([^)]*\)\.__init__\(\s*batch_size\s*=\s*1\b", wrap)
+    from_cfg = re.search(r"batch_size\s*=\s*(cfg|self\.cfg|[2-9])", wrap)
+    if hardcoded_1 and not from_cfg:
+        verdict("F2", "SAFE",
+                "BotSORT.__init__ hardcodes super().__init__(batch_size=1); the "
+                "config's batch_size never reaches the DataLoader for this stage",
+                grep(wrap, r"batch_size"))
+    elif from_cfg:
+        verdict("F2", "BATCHING",
+                "batch_size flows from config or is > 1 into the wrapper -- "
+                "process() indexes [0], so frames would be dropped",
+                grep(wrap, r"batch_size"), concern=True)
+    else:
+        verdict("F2", "UNRESOLVED",
+                "BotSORT.__init__ readable but batch_size handling not "
+                "recognised; inspect it by hand", grep(wrap, r"batch_size"),
+                concern=True)
 
 
 # --------------------------------------------------------------------------- F4
