@@ -22,22 +22,29 @@ PnLCalib/
 pnlcalib/
 
 # --- SoccerNet data ----------------------------------------------------------
-data/
+# ANCHORED with a leading slash. A bare `data/` matches at EVERY depth, which
+# silently excluded plugins/jn_gsr/str/parseq/strhub/data/ -- the vendored PARSeq
+# tokenizer/charset package that strhub/models/base.py imports at line 31. The
+# tree was on disk and simply never committed, so a fresh clone produced a
+# strhub with models/ but no data/, and setup_jn_gsr.sh died at the PARSeq load
+# gate AFTER building the venv and fetching a 382 MB checkpoint.
+# The same trap applies to the other cache names below: anchor them all.
+/data/
 *.zip
 Labels-GameState.json
 
 # --- caches produced by the pipeline ----------------------------------------
-optiona_calib/
-optiona_det_cache/
-broadtrack_calib/
-broadtrack_staging/
-states/
-outputs/
-multirun_outputs/
-reference_metrics/
-det_cache/
-results/
-labels/
+/optiona_calib/
+/optiona_det_cache/
+/broadtrack_calib/
+/broadtrack_staging/
+/states/
+/outputs/
+/multirun_outputs/
+/reference_metrics/
+/det_cache/
+/results/
+/labels/
 
 # --- environments ------------------------------------------------------------
 .venv/

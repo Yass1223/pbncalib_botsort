@@ -53,6 +53,40 @@ for f in predict_tracklets.py setup_env.py fetch_weights.py stage_weights.py; do
   [ -f "${JN_PKG}/${f}" ] || { echo "ERROR: ${JN_PKG}/${f} missing -- stale copy? Re-vendor." >&2; exit 1; }
 done
 
+# --- 1b. vendored PARSeq (strhub) COMPLETE? -----------------------------------
+# FAIL FAST, before the ~7 GB venv build and the 382 MB PARSeq checkpoint.
+#
+# strhub/models/base.py:31 does `from strhub.data.utils import ...`, so strhub is
+# only importable when BOTH models/ and data/ are present. A bare `data/` rule in
+# .gitignore used to match at every depth and silently excluded
+# str/parseq/strhub/data/ from the repo: the tree was on disk locally and never
+# committed, so a fresh clone got a strhub with models/ but no data/. The failure
+# then surfaced at the PARSeq load gate -- after both long steps had run, and
+# after the venv had been left half-built, so the next attempt rebuilt from
+# scratch. The .gitignore rule is now anchored (/data/); this check makes a
+# recurrence cheap and legible instead of expensive and cryptic.
+PARSEQ_STRHUB="${JN_PKG}/str/parseq/strhub"
+if [ -d "${PARSEQ_STRHUB}" ]; then
+  missing_parts=""
+  for part in models data; do
+    [ -d "${PARSEQ_STRHUB}/${part}" ] || missing_parts="${missing_parts} ${part}/"
+  done
+  [ -f "${PARSEQ_STRHUB}/data/utils.py" ] || missing_parts="${missing_parts} data/utils.py"
+  if [ -n "${missing_parts}" ]; then
+    echo "ERROR: vendored PARSeq is incomplete --${missing_parts} absent." >&2
+    echo "  ${PARSEQ_STRHUB}" >&2
+    echo "  strhub/models/base.py imports strhub.data.utils, so strhub cannot be" >&2
+    echo "  imported without it and the PARSeq load gate WILL fail -- but only" >&2
+    echo "  after the venv build and a 382 MB download. Stopping now instead." >&2
+    echo >&2
+    echo "  Most likely cause: the tree exists locally but was never committed." >&2
+    echo "  Check with:  git check-ignore -v ${PARSEQ_STRHUB}/data/utils.py" >&2
+    echo "  If a .gitignore rule matches it, anchor that rule (/data/ not data/)" >&2
+    echo "  and commit the tree; a bare pattern matches at every depth." >&2
+    exit 1
+  fi
+fi
+
 cd "${JN_PKG}"
 
 # --- 2. the package's own venv (its setup_env.py owns every pin) ---------------
