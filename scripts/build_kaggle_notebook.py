@@ -109,7 +109,12 @@ os.environ["MPLBACKEND"] = "Agg"
 os.environ["UV_LINK_MODE"] = "copy"
 
 REPO_URL = "https://github.com/Yass1223/pbncalib_botsort.git"
-PIN = "ff6028f"          # commit this notebook was written against
+# The PIN is one commit behind by construction: it cannot name the commit that
+# carries it, because that hash does not exist until this file is committed.
+# Execution follows the checkout, so what runs is the PINNED commit -- the last
+# VERIFIED one -- not the tip. That is the intended behaviour, not a lag to fix:
+# the tip contains at least the PIN bump itself, which nothing has run.
+PIN = "c680964"
 WORK = Path("/kaggle/working")
 REPO = WORK / "pbncalib_botsort"
 VENV = REPO / ".venv"
